@@ -3,13 +3,17 @@ name: brain-init
 description: Initialize brain sync network. Creates a Git remote for your brain and exports your current Claude Code state.
 user-invocable: true
 disable-model-invocation: true
-argument-hint: "<git-remote-url>"
+argument-hint: "<git-remote-url> [--encrypt]"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
 The user wants to initialize their Claude Brain sync network.
 
-The Git remote URL is provided as: $ARGUMENTS
+Parse arguments:
+- If arguments contain "--encrypt", enable encryption
+- The first non-flag argument is the Git remote URL
+
+Arguments provided: $ARGUMENTS
 
 ## Steps
 
@@ -51,13 +55,23 @@ The Git remote URL is provided as: $ARGUMENTS
 
 6. Run the initialization sequence:
    ```bash
+   # Parse arguments for encryption flag
+   ENABLE_ENCRYPTION=false
+   REMOTE_URL=""
+   for arg in $ARGUMENTS; do
+     case "$arg" in
+       --encrypt) ENABLE_ENCRYPTION=true ;;
+       *) if [ -z "$REMOTE_URL" ]; then REMOTE_URL="$arg"; fi ;;
+     esac
+   done
+
    # Create brain repo directory
    mkdir -p ~/.claude/brain-repo
 
    # Initialize git repo
    cd ~/.claude/brain-repo
    git init
-   git remote add origin "$ARGUMENTS" 2>/dev/null || git remote set-url origin "$ARGUMENTS"
+   git remote add origin "$REMOTE_URL" 2>/dev/null || git remote set-url origin "$REMOTE_URL"
 
    # Create directory structure
    mkdir -p machines consolidated meta
@@ -65,8 +79,35 @@ The Git remote URL is provided as: $ARGUMENTS
    # Initialize meta files
    echo '{"entries":[]}' > meta/merge-log.json
 
-   # Register this machine
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/register-machine.sh" "$ARGUMENTS"
+   # Set up encryption if requested
+   if [ "$ENABLE_ENCRYPTION" = "true" ]; then
+     echo "Setting up age encryption..."
+     
+     # Check if age is installed
+     if ! command -v age-keygen &>/dev/null; then
+       echo "ERROR: age not found. Install it from https://github.com/FiloSottile/age"
+       echo "On macOS: brew install age"
+       echo "On Ubuntu/Debian: apt install age"
+       exit 1
+     fi
+
+     # Generate age keypair
+     source "${CLAUDE_PLUGIN_ROOT}/scripts/common.sh"
+     IDENTITY_FILE="${HOME}/.claude/brain-age-key.txt"
+     RECIPIENTS_FILE="${HOME}/.claude/brain-repo/meta/recipients.txt"
+     generate_age_keypair "$IDENTITY_FILE" "$RECIPIENTS_FILE"
+     
+     echo "Age encryption configured:"
+     echo "  Private key: $IDENTITY_FILE"
+     echo "  Public key: $RECIPIENTS_FILE"
+   fi
+
+   # Register this machine (with encryption settings)
+   if [ "$ENABLE_ENCRYPTION" = "true" ]; then
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/register-machine.sh" "$REMOTE_URL" --encrypt
+   else
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/register-machine.sh" "$REMOTE_URL"
+   fi
 
    # Export initial brain snapshot
    MACHINE_ID=$(cat ~/.claude/brain-config.json | jq -r '.machine_id')

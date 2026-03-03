@@ -1,9 +1,8 @@
-You are merging knowledge bases from the same person across two machines.
+You are merging knowledge bases from the same person across multiple machines.
 
-Machine A: {{MACHINE_A}}
-Machine B: {{MACHINE_B}}
+{{MACHINE_LIST}}
 
-You will receive CLAUDE.md content and memory content from both machines.
+You will receive CLAUDE.md content and memory content from all machines.
 
 ## Rules
 

@@ -6,6 +6,17 @@ source "${SCRIPT_DIR}/common.sh"
 
 register_machine() {
   local remote="${1:-}"
+  local enable_encryption=false
+  
+  # Parse flags
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --encrypt) enable_encryption=true; shift ;;
+      *) shift ;;
+    esac
+  done
+  
   local machine_id machine_name os_type timestamp
 
   # Generate or load machine ID
@@ -37,28 +48,65 @@ register_machine() {
 
   # Create/update brain-config.json
   if $_has_jq; then
-    jq -n \
-      --arg ver "1.0.0" \
-      --arg remote "$remote" \
-      --arg mid "$machine_id" \
-      --arg mn "$machine_name" \
-      --arg os "$os_type" \
-      --arg repo "$BRAIN_REPO" \
-      --argjson sync true \
-      --arg ts "$timestamp" \
-      '{
-        version: $ver,
-        remote: $remote,
-        machine_id: $mid,
-        machine_name: $mn,
-        os: $os,
-        brain_repo_path: $repo,
-        auto_sync: $sync,
-        registered_at: $ts,
-        last_push: null,
-        last_pull: null,
-        dirty: false
-      }' > "$BRAIN_CONFIG"
+    if [ "$enable_encryption" = "true" ]; then
+      jq -n \
+        --arg ver "1.0.0" \
+        --arg remote "$remote" \
+        --arg mid "$machine_id" \
+        --arg mn "$machine_name" \
+        --arg os "$os_type" \
+        --arg repo "$BRAIN_REPO" \
+        --argjson sync true \
+        --arg ts "$timestamp" \
+        --arg identity "${HOME}/.claude/brain-age-key.txt" \
+        --arg recipients "${BRAIN_REPO}/meta/recipients.txt" \
+        '{
+          version: $ver,
+          remote: $remote,
+          machine_id: $mid,
+          machine_name: $mn,
+          os: $os,
+          brain_repo_path: $repo,
+          auto_sync: $sync,
+          registered_at: $ts,
+          last_push: null,
+          last_pull: null,
+          last_evolved: null,
+          dirty: false,
+          encryption: {
+            enabled: true,
+            identity: $identity,
+            recipients: $recipients
+          }
+        }' > "$BRAIN_CONFIG"
+    else
+      jq -n \
+        --arg ver "1.0.0" \
+        --arg remote "$remote" \
+        --arg mid "$machine_id" \
+        --arg mn "$machine_name" \
+        --arg os "$os_type" \
+        --arg repo "$BRAIN_REPO" \
+        --argjson sync true \
+        --arg ts "$timestamp" \
+        '{
+          version: $ver,
+          remote: $remote,
+          machine_id: $mid,
+          machine_name: $mn,
+          os: $os,
+          brain_repo_path: $repo,
+          auto_sync: $sync,
+          registered_at: $ts,
+          last_push: null,
+          last_pull: null,
+          last_evolved: null,
+          dirty: false,
+          encryption: {
+            enabled: false
+          }
+        }' > "$BRAIN_CONFIG"
+    fi
   elif $_has_python3; then
     # Pass all data via argv to avoid injection
     python3 -c "
@@ -134,8 +182,8 @@ with open(machines_file, 'w') as f:
 
 # Main
 if [ "${1:-}" = "--help" ]; then
-  echo "Usage: register-machine.sh <git-remote-url>"
+  echo "Usage: register-machine.sh <git-remote-url> [--encrypt]"
   exit 0
 fi
 
-register_machine "${1:-}"
+register_machine "$@"

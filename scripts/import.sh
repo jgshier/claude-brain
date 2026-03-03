@@ -304,6 +304,24 @@ import_brain() {
     fi
   fi
 
+  # Shared namespace: import to local directories (skills, agents, rules)
+  if $_has_jq; then
+    # Shared skills
+    local shared_skills
+    shared_skills=$(echo "$brain" | jq '.shared.skills // {}')
+    import_dir_entries "${CLAUDE_DIR}/skills" "$shared_skills"
+
+    # Shared agents
+    local shared_agents
+    shared_agents=$(echo "$brain" | jq '.shared.agents // {}')
+    import_dir_entries "${CLAUDE_DIR}/agents" "$shared_agents"
+
+    # Shared rules
+    local shared_rules
+    shared_rules=$(echo "$brain" | jq '.shared.rules // {}')
+    import_dir_entries "${CLAUDE_DIR}/rules" "$shared_rules"
+  fi
+
   log_info "Brain import complete."
 }
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # merge-semantic.sh — LLM-powered semantic merge for unstructured brain data
 # Uses claude -p with structured output for intelligent deduplication and conflict resolution
+# Supports N-way merge: all machine snapshots merged in a single prompt
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
-BASE="$1"    # Base/consolidated brain JSON
-OTHER="$2"   # Other machine's brain JSON
-OUTPUT="$3"  # Output path for merged brain
+# First arg is output, rest are input files (base + other snapshots)
+OUTPUT="$1"
+shift
+SNAPSHOTS=("$@")
 
 CONFIDENCE_THRESHOLD=0.8
 MAX_BUDGET="0.50"
@@ -29,34 +31,81 @@ if ! $_has_jq; then
   exit 0
 fi
 
-# Extract CLAUDE.md content from both
-base_claude_md=$(jq -r '.declarative.claude_md.content // ""' "$BASE")
-other_claude_md=$(jq -r '.declarative.claude_md.content // ""' "$OTHER")
+if [ ${#SNAPSHOTS[@]} -eq 0 ]; then
+  log_info "No snapshots to merge."
+  exit 0
+fi
 
-# Extract auto memory content
-base_memory=$(jq -r '
-  [.experiential.auto_memory // {} | to_entries[] |
-   "## Project: \(.key)\n\(.value | to_entries[] | "\(.key):\n\(.value.content // "")")"] |
-  join("\n\n")
-' "$BASE")
+if [ ${#SNAPSHOTS[@]} -eq 1 ]; then
+  log_info "Only one snapshot, no merge needed."
+  cp "${SNAPSHOTS[0]}" "$OUTPUT"
+  exit 0
+fi
 
-other_memory=$(jq -r '
-  [.experiential.auto_memory // {} | to_entries[] |
-   "## Project: \(.key)\n\(.value | to_entries[] | "\(.key):\n\(.value.content // "")")"] |
-  join("\n\n")
-' "$OTHER")
+# Extract content from all machines
+machine_list=""
+claude_md_sections=""
+memory_sections=""
+all_content_hash=""
 
-# Extract machine names
-base_machine=$(jq -r '.machine.name // "machine-a"' "$BASE")
-other_machine=$(jq -r '.machine.name // "machine-b"' "$OTHER")
+for snapshot_file in "${SNAPSHOTS[@]}"; do
+  if [ ! -f "$snapshot_file" ]; then
+    log_warn "Snapshot not found: $snapshot_file"
+    continue
+  fi
+  
+  # Extract machine info
+  machine_name=$(jq -r '.machine.name // "unknown"' "$snapshot_file")
+  machine_id=$(jq -r '.machine.id // "unknown"' "$snapshot_file")
+  
+  # Build machine list
+  if [ -z "$machine_list" ]; then
+    machine_list="Machines: $machine_name ($machine_id)"
+  else
+    machine_list="$machine_list, $machine_name ($machine_id)"
+  fi
+  
+  # Extract CLAUDE.md content
+  claude_md_content=$(jq -r '.declarative.claude_md.content // ""' "$snapshot_file")
+  claude_md_sections="${claude_md_sections}
 
-# ── Skip if content is identical ───────────────────────────────────────────────
-base_hash=$(echo "${base_claude_md}${base_memory}" | compute_hash)
-other_hash=$(echo "${other_claude_md}${other_memory}" | compute_hash)
+## CLAUDE.md from ${machine_name}:
+\`\`\`
+${claude_md_content}
+\`\`\`"
+  
+  # Extract auto memory content  
+  memory_content=$(jq -r '
+    [.experiential.auto_memory // {} | to_entries[] |
+     "## Project: \(.key)\n\(.value | to_entries[] | "\(.key):\n\(.value.content // "")")"] |
+    join("\n\n")
+  ' "$snapshot_file")
+  
+  memory_sections="${memory_sections}
 
-if [ "$base_hash" = "$other_hash" ]; then
-  log_info "No semantic differences to merge."
-  cp "$BASE" "$OUTPUT"
+## Memory from ${machine_name}:
+\`\`\`
+${memory_content}
+\`\`\`"
+
+  # Accumulate content for hash check
+  all_content_hash="${all_content_hash}${claude_md_content}${memory_content}"
+done
+
+# ── Check if all content is identical ─────────────────────────────────────────
+content_hash=$(echo "$all_content_hash" | compute_hash)
+# Simple check: if only one unique content hash, skip merge
+unique_hashes=()
+for snapshot_file in "${SNAPSHOTS[@]}"; do
+  snapshot_hash=$(jq -r '.declarative.claude_md.content // ""' "$snapshot_file" | compute_hash)
+  if [[ ! " ${unique_hashes[*]} " =~ " ${snapshot_hash} " ]]; then
+    unique_hashes+=("$snapshot_hash")
+  fi
+done
+
+if [ ${#unique_hashes[@]} -eq 1 ]; then
+  log_info "No semantic differences to merge - all content identical."
+  cp "${SNAPSHOTS[0]}" "$OUTPUT"
   exit 0
 fi
 
@@ -64,32 +113,10 @@ fi
 MERGE_TEMPLATE=$(cat "${PLUGIN_ROOT}/templates/merge-prompt.md")
 
 # Substitute placeholders
-PROMPT=$(echo "$MERGE_TEMPLATE" | \
-  sed "s|{{MACHINE_A}}|${base_machine}|g" | \
-  sed "s|{{MACHINE_B}}|${other_machine}|g")
+PROMPT=$(echo "$MERGE_TEMPLATE" | sed "s|{{MACHINE_LIST}}|${machine_list}|g")
 
 # Append the actual content
-PROMPT="${PROMPT}
-
-## CLAUDE.md from ${base_machine}:
-\`\`\`
-${base_claude_md}
-\`\`\`
-
-## CLAUDE.md from ${other_machine}:
-\`\`\`
-${other_claude_md}
-\`\`\`
-
-## Memory from ${base_machine}:
-\`\`\`
-${base_memory}
-\`\`\`
-
-## Memory from ${other_machine}:
-\`\`\`
-${other_memory}
-\`\`\`"
+PROMPT="${PROMPT}${claude_md_sections}${memory_sections}"
 
 # ── JSON Schema for structured output ──────────────────────────────────────────
 SCHEMA='{
@@ -140,17 +167,30 @@ RESULT=$(claude -p "$PROMPT" \
   --max-budget-usd "$MAX_BUDGET" \
   2>/dev/null) || {
   log_warn "claude -p failed. Falling back to concatenation merge."
-  # Fallback: concatenate both with markers
-  if [ -n "$other_claude_md" ] && [ "$base_claude_md" != "$other_claude_md" ]; then
-    fallback_claude_md="${base_claude_md}
+  # Fallback: use first snapshot as base, append others with markers
+  base_snapshot="${SNAPSHOTS[0]}"
+  cp "$base_snapshot" "$OUTPUT"
+  
+  # Collect unique CLAUDE.md content to append
+  base_claude_md=$(jq -r '.declarative.claude_md.content // ""' "$base_snapshot")
+  fallback_claude_md="$base_claude_md"
+  
+  for snapshot_file in "${SNAPSHOTS[@]:1}"; do
+    machine_name=$(jq -r '.machine.name // "unknown"' "$snapshot_file")
+    claude_md_content=$(jq -r '.declarative.claude_md.content // ""' "$snapshot_file")
+    
+    if [ -n "$claude_md_content" ] && [ "$claude_md_content" != "$base_claude_md" ]; then
+      fallback_claude_md="${fallback_claude_md}
 
-<!-- === Unmerged content from ${other_machine} === -->
-${other_claude_md}"
-    jq --arg content "$fallback_claude_md" \
-      '.declarative.claude_md.content = $content' "$BASE" > "$OUTPUT"
-  else
-    cp "$BASE" "$OUTPUT"
-  fi
+<!-- === Unmerged content from ${machine_name} === -->
+${claude_md_content}"
+    fi
+  done
+  
+  # Update output with concatenated content
+  tmp=$(brain_mktemp)
+  jq --arg content "$fallback_claude_md" \
+    '.declarative.claude_md.content = $content' "$OUTPUT" > "$tmp" && mv "$tmp" "$OUTPUT"
   exit 0
 }
 
@@ -160,8 +200,8 @@ merged_memory=$(echo "$RESULT" | jq '.structured_output.merged_memory_entries //
 conflicts=$(echo "$RESULT" | jq '.structured_output.conflicts // []')
 deduped=$(echo "$RESULT" | jq '.structured_output.deduped // []')
 
-# Start with base brain, apply semantic merges
-cp "$BASE" "$OUTPUT"
+# Start with first snapshot as base, apply semantic merges
+cp "${SNAPSHOTS[0]}" "$OUTPUT"
 
 # Update CLAUDE.md
 if [ -n "$merged_claude_md" ]; then

@@ -135,6 +135,22 @@ build_snapshot() {
     output_styles=$(scan_dir_entries "${CLAUDE_DIR}/output-styles")
   fi
 
+  # Shared namespace (only if brain repo exists)
+  local shared_skills="{}"
+  local shared_agents="{}"
+  local shared_rules="{}"
+  if [ -d "${BRAIN_REPO}/shared" ]; then
+    if [ -d "${BRAIN_REPO}/shared/skills" ]; then
+      shared_skills=$(scan_dir_entries "${BRAIN_REPO}/shared/skills")
+    fi
+    if [ -d "${BRAIN_REPO}/shared/agents" ]; then
+      shared_agents=$(scan_dir_entries "${BRAIN_REPO}/shared/agents")
+    fi
+    if [ -d "${BRAIN_REPO}/shared/rules" ]; then
+      shared_rules=$(scan_dir_entries "${BRAIN_REPO}/shared/rules")
+    fi
+  fi
+
   # Experiential: auto memory
   local auto_memory="{}"
   if [ -d "${CLAUDE_DIR}/projects" ]; then
@@ -280,6 +296,9 @@ print(result)
       --argjson keybindings "${keybindings:-null}" \
       --arg keybindings_hash "${keybindings_hash}" \
       --argjson mcp_servers "$mcp_servers" \
+      --argjson shared_skills "$shared_skills" \
+      --argjson shared_agents "$shared_agents" \
+      --argjson shared_rules "$shared_rules" \
       '{
         schema_version: $schema_ver,
         exported_at: $ts,
@@ -301,6 +320,11 @@ print(result)
           settings: { content: $settings, hash: ("sha256:" + $settings_hash) },
           keybindings: { content: $keybindings, hash: ("sha256:" + $keybindings_hash) },
           mcp_servers: $mcp_servers
+        },
+        shared: {
+          skills: $shared_skills,
+          agents: $shared_agents,
+          rules: $shared_rules
         }
       }'
   elif $_has_python3; then
@@ -336,6 +360,9 @@ with open(args[-1] if len(args) % 2 == 1 else '/dev/stdout', 'w') as f:
       "settings" "${settings:-null}" \
       "keybindings" "${keybindings:-null}" \
       "mcp_servers" "$mcp_servers" \
+      "shared_skills" "$shared_skills" \
+      "shared_agents" "$shared_agents" \
+      "shared_rules" "$shared_rules" \
       "$parts_file"
 
     # Now assemble the snapshot from the parts file
@@ -364,6 +391,11 @@ snapshot = {
         'settings': {'content': parts.get('settings'), 'hash': 'sha256:' + sys.argv[6]},
         'keybindings': {'content': parts.get('keybindings'), 'hash': 'sha256:' + sys.argv[7]},
         'mcp_servers': parts.get('mcp_servers', {})
+    },
+    'shared': {
+        'skills': parts.get('shared_skills', {}),
+        'agents': parts.get('shared_agents', {}),
+        'rules': parts.get('shared_rules', {})
     }
 }
 print(json.dumps(snapshot, indent=2))
@@ -396,9 +428,21 @@ if $_has_jq; then
 fi
 
 if [ -n "$OUTPUT" ]; then
-  echo "$snapshot" > "$OUTPUT"
+  if encryption_enabled && command -v age &>/dev/null; then
+    # Encrypt the snapshot before writing
+    local encrypted_snapshot
+    encrypted_snapshot=$(encrypt_content "$snapshot") || {
+      log_error "Failed to encrypt snapshot"
+      exit 1
+    }
+    echo "$encrypted_snapshot" > "$OUTPUT"
+    log_info "Brain snapshot exported (encrypted) to ${OUTPUT}"
+  else
+    echo "$snapshot" > "$OUTPUT"
+    log_info "Brain snapshot exported to ${OUTPUT}"
+  fi
   chmod 600 "$OUTPUT"
-  log_info "Brain snapshot exported to ${OUTPUT}"
 else
+  # For stdout output, don't encrypt (caller handles)
   echo "$snapshot"
 fi

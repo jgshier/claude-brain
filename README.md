@@ -72,6 +72,7 @@ Hooks auto-sync on every session start/end. Your brain follows you.
 | `/brain-sync` | Manually trigger full sync cycle |
 | `/brain-evolve` | Promote stable patterns from memory |
 | `/brain-conflicts` | Review and resolve merge conflicts |
+| `/brain-share <type> <name>` | Share a skill, agent, or rule with the team |
 | `/brain-log` | Show sync history |
 
 ## How It Works
@@ -96,15 +97,72 @@ Each machine pushes brain snapshots to a shared Git repo. When a machine pulls, 
 | Settings (hooks, permissions) | Yes | Deep merge (env vars excluded) |
 | Keybindings | Yes | Union |
 | MCP servers | Yes | Union, paths rewritten, env vars stripped |
+| Shared skills/agents/rules | Yes | Union via shared namespace |
 | OAuth tokens | Never | Security |
 | Env vars | Never | Machine-specific |
 | MCP server env fields | Never | May contain API keys |
+
+## Platform Support
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Linux | ✅ Fully supported | Primary development target |
+| macOS | ✅ Fully supported | Tested on Apple Silicon and Intel |
+| WSL | ✅ Fully supported | WSL2 recommended; auto-detected with path handling |
+| Windows native | ❌ Not supported | Use WSL instead |
+
+## Encryption
+
+Brain snapshots can be encrypted at rest using [age](https://github.com/FiloSottile/age).
+
+### Enable on init
+```
+/brain-init git@github.com:you/my-brain.git --encrypt
+```
+
+### How it works
+- Generates an `age` keypair per machine
+- Snapshots are encrypted before pushing to Git
+- Decrypted on pull using your machine's private key
+- Recipients file in `meta/recipients.txt` controls who can decrypt
+- Backward compatible: unencrypted snapshots are handled transparently
+
+### Adding a new machine to an encrypted network
+When you `/brain-join` an encrypted network, the plugin guides you through keypair generation. The network owner must add your public key to `meta/recipients.txt`.
+
+### Install age
+- macOS: `brew install age`
+- Ubuntu/Debian: `apt install age`
+- Other: https://github.com/FiloSottile/age
+
+## Team Sharing
+
+Share skills, agents, and rules with teammates via the shared namespace:
+
+```
+/brain-share skill my-useful-tool.md
+/brain-share agent debugger.md
+/brain-share rule security.md
+```
+
+Shared artifacts live in `shared/skills/`, `shared/agents/`, `shared/rules/` in the brain repo. Memory is **never** shared (personal only). Team members receive shared artifacts on their next sync.
+
+## Auto-Evolve
+
+The brain automatically runs evolution analysis every 7 days (configurable via `evolve_interval_days` in `defaults.json`). During auto-evolve:
+
+- High-confidence promotions (>0.9) are applied automatically
+- Lower-confidence suggestions are queued as conflicts for manual review via `/brain-conflicts`
+- The timer resets after each evolution run
+
+You can always trigger manually with `/brain-evolve`.
 
 ## Dependencies
 
 - `git` (for sync transport)
 - `jq` or `python3` (for JSON processing)
 - `claude` CLI (for semantic merge — already installed if you have Claude Code)
+- `age` (optional, for encryption)
 
 ## Architecture
 

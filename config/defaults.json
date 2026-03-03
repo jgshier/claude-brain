@@ -8,5 +8,9 @@
   "push_retry_attempts": 3,
   "push_retry_delay_seconds": 2,
   "sync_timeout_seconds": 30,
-  "stale_threshold_days": 14
+  "stale_threshold_days": 14,
+  "encryption": {
+    "enabled": false
+  },
+  "evolve_interval_days": 7
 }

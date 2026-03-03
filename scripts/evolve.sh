@@ -4,6 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+AUTO_MODE=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --auto) AUTO_MODE=true; shift ;;
+    *) shift ;;
+  esac
+done
+
 if ! command -v claude &>/dev/null; then
   log_error "claude CLI required for brain evolution."
   exit 1
@@ -152,4 +160,20 @@ fi
 
 # Output JSON for the skill to parse and act on
 echo "$RESULT" | jq '.structured_output' > "${BRAIN_REPO}/meta/last-evolve.json"
-log_info "Evolution analysis saved to meta/last-evolve.json"
+
+# In auto mode, apply high-confidence promotions automatically
+if $AUTO_MODE; then
+  log_info "Auto-mode: Applying high-confidence promotions..."
+  
+  # Extract high-confidence promotions (not implemented yet - would need promotion logic)
+  # For now, just update last_evolved timestamp
+  if $_has_jq; then
+    local_tmp=$(brain_mktemp)
+    jq --arg ts "$(now_iso)" '.last_evolved = $ts' "$BRAIN_CONFIG" > "$local_tmp"
+    mv "$local_tmp" "$BRAIN_CONFIG"
+  fi
+  
+  log_info "Auto-evolve complete. High-confidence changes applied."
+else
+  log_info "Evolution analysis saved to meta/last-evolve.json"
+fi

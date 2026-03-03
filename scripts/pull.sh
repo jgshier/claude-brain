@@ -47,13 +47,34 @@ if [ -f "${BRAIN_REPO}/consolidated/brain.json" ]; then
   local_consolidated_hash=$(file_hash "${BRAIN_REPO}/consolidated/brain.json")
 fi
 
-# Collect all machine snapshots
+# Collect all machine snapshots (decrypt if needed)
 snapshot_count=0
 snapshots=()
+decrypted_snapshots=()
+
 for snapshot_file in "${BRAIN_REPO}"/machines/*/brain-snapshot.json; do
   if [ -f "$snapshot_file" ]; then
-    snapshots+=("$snapshot_file")
-    snapshot_count=$((snapshot_count + 1))
+    # Check if snapshot is encrypted
+    if is_encrypted_content "$(cat "$snapshot_file")"; then
+      if encryption_enabled && command -v age &>/dev/null; then
+        # Decrypt to temp file
+        local decrypted_tmp
+        decrypted_tmp=$(brain_mktemp)
+        if decrypt_file "$snapshot_file" "$decrypted_tmp"; then
+          snapshots+=("$decrypted_tmp")
+          decrypted_snapshots+=("$decrypted_tmp")
+          snapshot_count=$((snapshot_count + 1))
+        else
+          log_warn "Failed to decrypt snapshot: $snapshot_file"
+        fi
+      else
+        log_warn "Encrypted snapshot found but encryption not configured: $snapshot_file"
+      fi
+    else
+      # Unencrypted snapshot
+      snapshots+=("$snapshot_file")
+      snapshot_count=$((snapshot_count + 1))
+    fi
   fi
 done
 
@@ -68,48 +89,30 @@ if [ "$snapshot_count" -eq 1 ]; then
   # Only one machine — its snapshot IS the consolidated brain
   cp "${snapshots[0]}" "${BRAIN_REPO}/consolidated/brain.json"
 else
-  # Multiple machines — merge pairwise
+  # Multiple machines — N-way merge 
   log_info "Merging snapshots from ${snapshot_count} machines..."
 
-  # Start with the current consolidated brain, or first snapshot
-  if [ -f "${BRAIN_REPO}/consolidated/brain.json" ]; then
-    cp "${BRAIN_REPO}/consolidated/brain.json" "${BRAIN_REPO}/consolidated/brain.json.merging"
-  else
-    cp "${snapshots[0]}" "${BRAIN_REPO}/consolidated/brain.json.merging"
-  fi
-
-  for snapshot_file in "${snapshots[@]}"; do
-    local snapshot_machine_id
-    if $_has_jq; then
-      snapshot_machine_id=$(jq -r '.machine.id' "$snapshot_file")
-    else
-      snapshot_machine_id="unknown"
-    fi
-
-    # Run structured merge (settings, keybindings, MCP)
+  # Use merge-structured.sh for pairwise structured merge
+  cp "${snapshots[0]}" "${BRAIN_REPO}/consolidated/brain.json.merging"
+  
+  for ((i=1; i<${#snapshots[@]}; i++)); do
     "${SCRIPT_DIR}/merge-structured.sh" \
       "${BRAIN_REPO}/consolidated/brain.json.merging" \
-      "$snapshot_file" \
-      "${BRAIN_REPO}/consolidated/brain.json.merging" || true
-
-    # Run semantic merge for memory/CLAUDE.md (only if content differs)
-    if $_has_jq; then
-      local base_memory_hash new_memory_hash
-      base_memory_hash=$(jq '.experiential' "${BRAIN_REPO}/consolidated/brain.json.merging" | compute_hash)
-      new_memory_hash=$(jq '.experiential' "$snapshot_file" | compute_hash)
-
-      if [ "$base_memory_hash" != "$new_memory_hash" ]; then
-        "${SCRIPT_DIR}/merge-semantic.sh" \
-          "${BRAIN_REPO}/consolidated/brain.json.merging" \
-          "$snapshot_file" \
-          "${BRAIN_REPO}/consolidated/brain.json.merging" || {
-          log_warn "Semantic merge failed for ${snapshot_machine_id}. Using structured merge only."
-        }
-      fi
-    fi
+      "${snapshots[i]}" \
+      "${BRAIN_REPO}/consolidated/brain.json.merging"
   done
 
-  mv "${BRAIN_REPO}/consolidated/brain.json.merging" "${BRAIN_REPO}/consolidated/brain.json"
+  # Now run N-way semantic merge on all snapshots at once
+  "${SCRIPT_DIR}/merge-semantic.sh" \
+    "${BRAIN_REPO}/consolidated/brain.json" \
+    "${snapshots[@]}" || {
+    log_warn "Semantic merge failed. Using structured merge only."
+  }
+  
+  # Use the structurally merged version if semantic merge failed
+  if [ -f "${BRAIN_REPO}/consolidated/brain.json.merging" ]; then
+    mv "${BRAIN_REPO}/consolidated/brain.json.merging" "${BRAIN_REPO}/consolidated/brain.json"
+  fi
 fi
 
 # Apply consolidated brain locally (with validation and backup)
@@ -129,6 +132,35 @@ if $_has_jq; then
   local_tmp=$(brain_mktemp)
   jq --arg ts "$(now_iso)" '.last_pull = $ts' "$BRAIN_CONFIG" > "$local_tmp"
   mv "$local_tmp" "$BRAIN_CONFIG"
+fi
+
+# Check if auto-evolve is due
+if $_has_jq && [ -f "$DEFAULTS_FILE" ]; then
+  local evolve_interval_days last_evolved days_since_evolve
+  evolve_interval_days=$(jq -r '.evolve_interval_days // 7' "$DEFAULTS_FILE")
+  last_evolved=$(jq -r '.last_evolved // null' "$BRAIN_CONFIG")
+  
+  if [ "$last_evolved" = "null" ] || [ -z "$last_evolved" ]; then
+    # Never evolved, set to now to start the timer
+    local_tmp=$(brain_mktemp)
+    jq --arg ts "$(now_iso)" '.last_evolved = $ts' "$BRAIN_CONFIG" > "$local_tmp"
+    mv "$local_tmp" "$BRAIN_CONFIG"
+  else
+    # Calculate days since last evolution
+    if command -v date &>/dev/null; then
+      local last_evolved_ts current_ts
+      last_evolved_ts=$(date -d "$last_evolved" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_evolved" +%s 2>/dev/null || echo "0")
+      current_ts=$(date +%s)
+      days_since_evolve=$(( (current_ts - last_evolved_ts) / 86400 ))
+      
+      if [ "$days_since_evolve" -ge "$evolve_interval_days" ]; then
+        log_info "Auto-evolve due (${days_since_evolve} days since last evolution)..."
+        "${SCRIPT_DIR}/evolve.sh" --auto 2>/dev/null || {
+          log_warn "Auto-evolve failed. Run /brain-evolve manually."
+        }
+      fi
+    fi
+  fi
 fi
 
 # Log the merge

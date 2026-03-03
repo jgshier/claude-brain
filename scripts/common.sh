@@ -33,7 +33,14 @@ trap _brain_cleanup_temps EXIT
 # ── OS Detection ───────────────────────────────────────────────────────────────
 detect_os() {
   case "$(uname -s)" in
-    Linux*)  echo "linux" ;;
+    Linux*)  
+      # Check for WSL
+      if [ -f /proc/version ] && grep -qi microsoft /proc/version; then
+        echo "wsl"
+      else
+        echo "linux"
+      fi
+      ;;
     Darwin*) echo "macos" ;;
     MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
     *)       echo "unknown" ;;
@@ -41,6 +48,32 @@ detect_os() {
 }
 
 OS="$(detect_os)"
+
+# WSL-specific path handling
+is_wsl() {
+  [ "$OS" = "wsl" ]
+}
+
+# Convert Windows paths to WSL paths if needed
+normalize_path() {
+  local path="$1"
+  if is_wsl && echo "$path" | grep -q '^[A-Za-z]:'; then
+    # Convert C:\Users\... to /mnt/c/Users/...
+    echo "$path" | sed 's|^\([A-Za-z]\):|/mnt/\L\1|' | sed 's|\\|/|g'
+  else
+    echo "$path"
+  fi
+}
+
+# Get the appropriate home directory
+get_user_home() {
+  if is_wsl && [ -n "${USERPROFILE:-}" ]; then
+    # In WSL, prefer Windows user profile for consistency
+    normalize_path "$USERPROFILE"
+  else
+    echo "$HOME"
+  fi
+}
 
 # ── JSON Query ─────────────────────────────────────────────────────────────────
 # Uses jq if available, falls back to python3
@@ -355,11 +388,143 @@ check_dependencies() {
     missing+=("jq or python3")
   fi
 
+  # Check age if encryption is enabled
+  if is_initialized && encryption_enabled && ! command -v age &>/dev/null; then
+    missing+=("age (for encryption)")
+  fi
+
   if [ ${#missing[@]} -gt 0 ]; then
     echo "ERROR: Missing dependencies: ${missing[*]}" >&2
     echo "Install them before using claude-brain." >&2
+    echo "age can be installed from: https://github.com/FiloSottile/age" >&2
     return 1
   fi
+}
+
+# ── Age Encryption ────────────────────────────────────────────────────────────
+encryption_enabled() {
+  if [ -f "$BRAIN_CONFIG" ] && $_has_jq; then
+    local enabled
+    enabled=$(jq -r '.encryption.enabled // false' "$BRAIN_CONFIG")
+    [ "$enabled" = "true" ]
+  else
+    false
+  fi
+}
+
+get_age_identity() {
+  if [ -f "$BRAIN_CONFIG" ] && $_has_jq; then
+    jq -r '.encryption.identity // "~/.claude/brain-age-key.txt"' "$BRAIN_CONFIG" | sed "s|~|$HOME|"
+  else
+    echo "${HOME}/.claude/brain-age-key.txt"
+  fi
+}
+
+get_age_recipients() {
+  if [ -f "$BRAIN_CONFIG" ] && $_has_jq; then
+    jq -r '.encryption.recipients // "~/.claude/brain-repo/meta/recipients.txt"' "$BRAIN_CONFIG" | sed "s|~|$HOME|"
+  else
+    echo "${BRAIN_REPO}/meta/recipients.txt"
+  fi
+}
+
+generate_age_keypair() {
+  local identity_file="$1"
+  local recipients_file="$2"
+  
+  if ! command -v age-keygen &>/dev/null; then
+    log_error "age-keygen not found. Install age from https://github.com/FiloSottile/age"
+    return 1
+  fi
+  
+  mkdir -p "$(dirname "$identity_file")" "$(dirname "$recipients_file")"
+  
+  # Generate keypair
+  age-keygen -o "$identity_file" 2>/dev/null || {
+    log_error "Failed to generate age keypair"
+    return 1
+  }
+  
+  # Extract public key to recipients file
+  grep "# public key:" "$identity_file" | cut -d' ' -f4 > "$recipients_file"
+  chmod 600 "$identity_file"
+  chmod 644 "$recipients_file"
+  
+  log_info "Generated age keypair:"
+  log_info "  Identity (private): $identity_file"
+  log_info "  Recipients (public): $recipients_file"
+}
+
+encrypt_content() {
+  local content="$1"
+  local recipients_file
+  recipients_file=$(get_age_recipients)
+  
+  if [ ! -f "$recipients_file" ]; then
+    log_error "Age recipients file not found: $recipients_file"
+    return 1
+  fi
+  
+  echo "$content" | age -R "$recipients_file" 2>/dev/null || {
+    log_error "Failed to encrypt content"
+    return 1
+  }
+}
+
+decrypt_content() {
+  local encrypted_content="$1"
+  local identity_file
+  identity_file=$(get_age_identity)
+  
+  if [ ! -f "$identity_file" ]; then
+    log_error "Age identity file not found: $identity_file"
+    return 1
+  fi
+  
+  echo "$encrypted_content" | age -d -i "$identity_file" 2>/dev/null || {
+    log_error "Failed to decrypt content"
+    return 1
+  }
+}
+
+is_encrypted_content() {
+  local content="$1"
+  # Check for age armor header
+  echo "$content" | head -1 | grep -q "^-----BEGIN AGE ENCRYPTED FILE-----"
+}
+
+encrypt_file() {
+  local input_file="$1"
+  local output_file="$2"
+  local recipients_file
+  recipients_file=$(get_age_recipients)
+  
+  if [ ! -f "$recipients_file" ]; then
+    log_error "Age recipients file not found: $recipients_file"
+    return 1
+  fi
+  
+  age -R "$recipients_file" -o "$output_file" "$input_file" 2>/dev/null || {
+    log_error "Failed to encrypt file: $input_file"
+    return 1
+  }
+}
+
+decrypt_file() {
+  local input_file="$1"
+  local output_file="$2"
+  local identity_file
+  identity_file=$(get_age_identity)
+  
+  if [ ! -f "$identity_file" ]; then
+    log_error "Age identity file not found: $identity_file"
+    return 1
+  fi
+  
+  age -d -i "$identity_file" -o "$output_file" "$input_file" 2>/dev/null || {
+    log_error "Failed to decrypt file: $input_file"
+    return 1
+  }
 }
 
 # ── Secret Scanning ──────────────────────────────────────────────────────────

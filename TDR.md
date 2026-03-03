@@ -390,13 +390,13 @@ No Python, Node, or package manager dependencies beyond what developers already 
 
 ## 9. Limitations (v0)
 
-- No encryption at rest for brain snapshots (relies on Git repo access controls)
-- No team/shared brain support (personal only)
+- ~~No encryption at rest for brain snapshots~~ → **Resolved:** Optional age encryption (v0.2)
+- ~~No team/shared brain support~~ → **Resolved:** Shared namespace for skills/agents/rules (v0.2)
 - No selective sync (all-or-nothing per knowledge type)
-- No automatic evolve scheduling (manual `/brain-evolve` only)
+- ~~No automatic evolve scheduling~~ → **Resolved:** Auto-evolve on pull after configurable interval (v0.2)
 - Merge conflicts require manual resolution via `/brain-conflicts`
 - jq must be installed separately on machines that don't have it
-- No Windows native support (WSL works, Git Bash may not)
+- ~~No Windows native support~~ → **Documented:** WSL fully supported with auto-detection; Windows native not planned
 
 ## 10. Future Enhancements (Post-v0)
 
