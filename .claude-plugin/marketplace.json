@@ -1,5 +1,5 @@
 {
-  "name": "claude-brain",
+  "name": "claude-brain-sync",
   "owner": {
     "name": "edvatar"
   },
@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "claude-brain",
+      "name": "claude-brain-sync",
       "source": "./",
       "description": "Sync and evolve your Claude Code brain across machines. Automatically exports, merges, and applies your accumulated knowledge across all your development machines via Git.",
       "version": "0.1.0",
