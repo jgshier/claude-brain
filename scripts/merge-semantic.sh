@@ -42,6 +42,7 @@ fi
 machine_list=""
 claude_md_sections=""
 memory_sections=""
+plans_sections=""
 all_content_hash=""
 
 for snapshot_file in "${SNAPSHOTS[@]}"; do
@@ -84,8 +85,22 @@ ${claude_md_content}
 ${memory_content}
 \`\`\`"
 
+  # Extract plans content
+  plans_content=$(jq -r '
+    [.plans // {} | to_entries[] |
+     "### \(.key)\n\(.value.content // "")"]
+    | join("\n\n")
+  ' "$snapshot_file")
+
+  plans_sections="${plans_sections}
+
+## Plans from ${machine_name}:
+\`\`\`
+${plans_content}
+\`\`\`"
+
   # Accumulate content for hash check
-  all_content_hash="${all_content_hash}${claude_md_content}${memory_content}"
+  all_content_hash="${all_content_hash}${claude_md_content}${memory_content}${plans_content}"
 done
 
 # ── Check if all content is identical ─────────────────────────────────────────
@@ -110,6 +125,7 @@ PROMPT_FILE=$(brain_mktemp)
 sed "s|{{MACHINE_LIST}}|${machine_list}|g" "${PLUGIN_ROOT}/templates/merge-prompt.md" > "$PROMPT_FILE"
 echo "$claude_md_sections" >> "$PROMPT_FILE"
 echo "$memory_sections" >> "$PROMPT_FILE"
+echo "$plans_sections" >> "$PROMPT_FILE"
 
 # ── JSON Schema for structured output ──────────────────────────────────────────
 SCHEMA='{
@@ -122,6 +138,13 @@ SCHEMA='{
     "merged_memory_entries": {
       "type": "object",
       "description": "Merged memory organized by project name, each containing a MEMORY.md string",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "merged_plans": {
+      "type": "object",
+      "description": "Merged plans organized by filename, each containing the full plan text",
       "additionalProperties": {
         "type": "string"
       }
@@ -146,7 +169,7 @@ SCHEMA='{
       "description": "List of entries that were duplicated and removed"
     }
   },
-  "required": ["merged_claude_md", "merged_memory_entries", "conflicts", "deduped"]
+  "required": ["merged_claude_md", "merged_memory_entries", "merged_plans", "conflicts", "deduped"]
 }'
 
 # ── Call claude -p ─────────────────────────────────────────────────────────────
@@ -184,12 +207,18 @@ ${claude_md_content}"
   tmp=$(brain_mktemp)
   jq --arg content "$fallback_claude_md" \
     '.declarative.claude_md.content = $content' "$OUTPUT" > "$tmp" && mv "$tmp" "$OUTPUT"
+
+  # Fallback plans: union all plan files from all snapshots
+  tmp=$(brain_mktemp)
+  jq -s 'map(.plans // {}) | add // {}' "${SNAPSHOTS[@]}" | \
+    jq --slurpfile base "$OUTPUT" '$base[0] * {plans: .}' > "$tmp" && mv "$tmp" "$OUTPUT"
   exit 0
 }
 
 # ── Parse result and update brain ──────────────────────────────────────────────
 merged_claude_md=$(echo "$RESULT" | jq -r '.structured_output.merged_claude_md // empty')
 merged_memory=$(echo "$RESULT" | jq '.structured_output.merged_memory_entries // {}')
+merged_plans=$(echo "$RESULT" | jq '.structured_output.merged_plans // {}')
 conflicts=$(echo "$RESULT" | jq '.structured_output.conflicts // []')
 deduped=$(echo "$RESULT" | jq '.structured_output.deduped // []')
 
@@ -211,6 +240,17 @@ if [ "$(echo "$merged_memory" | jq 'length')" -gt 0 ]; then
     content=$(echo "$merged_memory" | jq -r --arg p "$project" '.[$p]')
     jq --arg p "$project" --arg c "$content" \
       '.experiential.auto_memory[$p]["MEMORY.md"].content = $c | .experiential.auto_memory[$p]["MEMORY.md"].hash = "merged"' \
+      "$OUTPUT" > "$tmp" && mv "$tmp" "$OUTPUT"
+  done
+fi
+
+# Update plans
+if [ "$(echo "$merged_plans" | jq 'length')" -gt 0 ]; then
+  echo "$merged_plans" | jq -r 'keys[]' | while read -r plan_file; do
+    content=$(echo "$merged_plans" | jq -r --arg f "$plan_file" '.[$f]')
+    tmp=$(brain_mktemp)
+    jq --arg f "$plan_file" --arg c "$content" \
+      '.plans[$f].content = $c | .plans[$f].hash = "merged"' \
       "$OUTPUT" > "$tmp" && mv "$tmp" "$OUTPUT"
   done
 fi

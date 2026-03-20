@@ -120,6 +120,12 @@ build_snapshot() {
     fi
   fi
 
+  # Plans directory
+  local plans="{}"
+  if [ -d "${PLANS_DIR}" ]; then
+    plans=$(scan_dir_entries "${PLANS_DIR}")
+  fi
+
   # Experiential: auto memory
   local auto_memory="{}"
   if [ -d "${CLAUDE_DIR}/projects" ]; then
@@ -203,6 +209,7 @@ build_snapshot() {
       --argjson keybindings "${keybindings:-null}" \
       --arg keybindings_hash "${keybindings_hash}" \
       --argjson mcp_servers "$mcp_servers" \
+      --argjson plans "$plans" \
       --argjson shared_skills "$shared_skills" \
       --argjson shared_agents "$shared_agents" \
       --argjson shared_rules "$shared_rules" \
@@ -228,6 +235,7 @@ build_snapshot() {
           keybindings: { content: $keybindings, hash: ("sha256:" + $keybindings_hash) },
           mcp_servers: $mcp_servers
         },
+        plans: $plans,
         shared: {
           skills: $shared_skills,
           agents: $shared_agents,

@@ -89,6 +89,11 @@ def deep_merge:
 ($other.experiential.agent_memory // {}) as $other_amem |
 ([$base_amem, $other_amem] | add // {}) as $merged_amem |
 
+# Merge plans (union by filename; semantic merge handles content conflicts)
+($base.plans // {}) as $base_plans |
+($other.plans // {}) as $other_plans |
+([$base_plans, $other_plans] | add // {}) as $merged_plans |
+
 # Assemble merged brain
 $base * {
   declarative: {
@@ -108,7 +113,8 @@ $base * {
     settings: { content: $merged_settings, hash: "merged" },
     keybindings: { content: $merged_kb, hash: "merged" },
     mcp_servers: $merged_mcp
-  }
+  },
+  plans: $merged_plans
 }
 ' "$BASE" "$OTHER" > "$OUTPUT"
 

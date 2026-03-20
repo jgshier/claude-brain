@@ -136,6 +136,7 @@ Done. Auto-sync handles everything from here.
 | Settings (hooks, permissions) | Yes | Deep merge |
 | Keybindings | Yes | Union |
 | MCP servers | Yes | Union (env vars stripped) |
+| Plans | Yes | Semantic merge |
 | Shared team artifacts | Yes | Union via shared namespace |
 | **OAuth tokens** | **Never** | Security |
 | **Env vars** | **Never** | Machine-specific |
@@ -248,6 +249,7 @@ Trigger manually anytime with `/brain-evolve`.
 - Settings (hooks, permissions — NOT env vars)
 - MCP server configurations (env vars stripped)
 - Keybindings
+- Plans (`~/plans/*.md`)
 - Machine hostname and project directory names
 
 ### What is NEVER exported

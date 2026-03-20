@@ -264,6 +264,11 @@ import_brain() {
     shared_rules=$(echo "$brain" | jq '.shared.rules // {}')
     import_dir_entries "${CLAUDE_DIR}/rules" "$shared_rules"
 
+  # Plans directory
+    local plans
+    plans=$(echo "$brain" | jq '.plans // {}')
+    import_dir_entries "${PLANS_DIR}" "$plans"
+
   log_info "Brain import complete."
 }
 
