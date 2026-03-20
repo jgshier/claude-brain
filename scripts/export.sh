@@ -51,6 +51,9 @@ scan_dir_entries() {
     return
   fi
 
+  # Resolve symlinks so find output matches the prefix for relpath stripping
+  dir=$(cd "$dir" && pwd -P)
+
     result=$(find "$dir" -type f -name "*.md" 2>/dev/null | sort | while read -r f; do
       # Size guard per file
       if ! check_file_size "$f" 2>/dev/null; then
